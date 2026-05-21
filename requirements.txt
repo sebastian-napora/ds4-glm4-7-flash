@@ -1,0 +1,10 @@
+# Helper dependencies for downloads and the LiteLLM proxy.
+#
+# Native inference is C code under native/. LiteLLM is only the VS Code/Copilot
+# compatibility proxy in front of native/bin/glm-native-server.
+
+huggingface_hub>=0.20.0
+litellm>=1.0.0
+fastapi>=0.100.0
+uvicorn[standard]>=0.20.0
+aiohttp>=3.9.0

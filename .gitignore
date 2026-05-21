@@ -40,6 +40,7 @@ Thumbs.db
 *.pdf
 *.txt
 !README.md
+!requirements.txt
 
 # Build artifacts
 *.tgz
