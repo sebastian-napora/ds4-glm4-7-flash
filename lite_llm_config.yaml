@@ -1,19 +1,17 @@
-# LiteLLM Proxy Configuration for GLM-4.7-Flash-NVFP4
+# LiteLLM Proxy Configuration for GLM-4.7-Flash custom native backend
 #
 # Architecture:
-#   Copilot -> LiteLLM (11111) -> vLLM (11112)
-#
-# Start vLLM backend (11112):  python3 glm_server.py
-# Start LiteLLM proxy (11111): python3 server_compress.py
+#   VS Code / GitHub Copilot plugin -> LiteLLM (11111) -> glm-native-server (11112)
 
 model_list:
-  - model_name: glm-4.7-flash-nvfp4
+  - model_name: glm-4.7-flash-gguf
     litellm_params:
-      model: openai/GadflyII/GLM-4.7-Flash-NVFP4
+      model: openai/glm-4.7-flash-native
       api_base: http://localhost:11112/v1
       api_key: none
       max_tokens: 60000
-      temperature: 0.7
+      temperature: 1.0
+      top_p: 0.95
     model_info:
       mode: chat
       supports_function_calling: true
@@ -22,11 +20,12 @@ model_list:
 
   - model_name: glm47flash
     litellm_params:
-      model: openai/GadflyII/GLM-4.7-Flash-NVFP4
+      model: openai/glm-4.7-flash-native
       api_base: http://localhost:11112/v1
       api_key: none
       max_tokens: 60000
-      temperature: 0.7
+      temperature: 1.0
+      top_p: 0.95
     model_info:
       mode: chat
       supports_function_calling: true
@@ -41,6 +40,6 @@ litellm_settings:
   max_parallel_requests: 1
 
 general_settings:
-  completion_model: "glm-4.7-flash-nvfp4"
+  completion_model: "glm-4.7-flash-gguf"
   database_url: null
   store_model_in_db: false

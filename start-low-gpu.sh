@@ -1,8 +1,8 @@
 #!/bin/bash
 #
-# Conservative launcher for shared GB10 machines.
-# Applies an NVIDIA power limit when nvidia-smi allows it, then starts the
-# normal GB10 vLLM/LiteLLM stack.
+# Conservative wrapper for the custom native GLM server.
+# At this stage the native server only loads the model, so GPU throttling is
+# mostly future-facing for when CUDA kernels land.
 
 set -euo pipefail
 
@@ -18,12 +18,6 @@ if command -v nvidia-smi >/dev/null 2>&1; then
         echo "Setting GPU power limit to ${NEW_POWER}W (${GPU_POWER_LIMIT_PERCENT}% of ${MAX_POWER}W)"
         sudo -n nvidia-smi -pl "$NEW_POWER" 2>/dev/null || nvidia-smi -pl "$NEW_POWER" 2>/dev/null || true
     fi
-else
-    echo "nvidia-smi not found; skipping GPU power limit"
 fi
-
-export VLLM_GPU_MEM_UTIL="${VLLM_GPU_MEM_UTIL:-0.45}"
-export VLLM_MAX_MODEL_LEN="${VLLM_MAX_MODEL_LEN:-32768}"
-export VLLM_OPT_LEVEL="${VLLM_OPT_LEVEL:-0}"
 
 exec "$SCRIPT_DIR/start-gb10.sh" "${1:-both}"
