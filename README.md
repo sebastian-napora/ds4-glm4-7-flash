@@ -1,159 +1,158 @@
-# ds4-glm: GLM-4.7-Flash-NVFP4 on DGX Spark GB10
+# ds4-glm: Custom Native GLM Engine
 
-This folder is a GLM-specific sibling setup inspired by `ds4-changed`, but it
-does not reuse the native DS4 GGUF engine. `GadflyII/GLM-4.7-Flash-NVFP4` is a
-Safetensors `glm4_moe_lite` checkpoint using compressed-tensors NVFP4, so the
-runtime here is:
+This branch is for a DS4-style custom native implementation of
+GLM-4.7-Flash. The model backend does **not** use llama.cpp, vLLM, SGLang,
+Ollama, or any existing inference engine.
+
+LiteLLM is still used as the outer proxy for VS Code / GitHub Copilot plugin
+compatibility:
 
 ```text
-client / agent -> LiteLLM proxy (11111) -> vLLM OpenAI server (11112)
-                                      \-> token stats server (11113)
+VS Code / Copilot plugin -> LiteLLM (11111) -> glm-native-server (11112)
 ```
 
-The intended machine is a DGX Spark / GB10 class box with 128 GB unified memory.
+Current status:
 
-## Why This Is Different From ds4-changed
+- Native C GGUF reader: implemented.
+- Native GLM engine object: implemented.
+- Native CLI loader: implemented.
+- Native HTTP server shell: implemented.
+- LiteLLM proxy to native backend: implemented.
+- Tokenizer, forward pass, sampling, and CUDA kernels: not implemented yet.
 
-`ds4-changed` is a narrow custom runner for DeepSeek V4 Flash GGUF files. Its
-CUDA launcher can lazily resident-cache routed expert slices with
-`DS4_CUDA_LAZY_ROUTED_EXPERTS`.
+The first real target model is:
 
-GLM-4.7-Flash-NVFP4 is different:
+```text
+models/GLM-4.7-Flash-Q8_0.gguf
+```
 
-- Model format: Safetensors + compressed-tensors NVFP4, not GGUF.
-- Architecture: `Glm4MoeLiteForCausalLM`, 30B total / 3B active.
-- MoE shape: 64 routed experts, 4 active per token, 1 shared expert.
-- Attention: MLA is left BF16 in this quant; the FP4 path mostly covers MLPs.
-- Runtime: vLLM owns the compressed-tensors/NVFP4 kernels and OpenAI API.
+`Q8_0` is intentionally the default because it is the best foundation for a
+custom engine port. It is larger than Q4/UD quants, but much simpler to
+validate before implementing lower-bit kernels.
 
-So the equivalent of the DS4 "kernel approach" is not a C engine port. It is a
-careful vLLM launch profile:
-
-- `VLLM_USE_FLASHINFER_MOE_FP4=0` on GB10, because FlashInfer FP4 MoE has been
-  unstable on this hardware path in the copied setup.
-- `VLLM_OPT_LEVEL=1` by default: CUDA graphs without torch.compile.
-- `VLLM_GPU_MEM_UTIL=0.50` by default for 128 GB headroom.
-- `VLLM_MAX_MODEL_LEN=65536` by default for agent work; raise to `202752` only
-  when you need full context.
-- `--tool-call-parser glm47` and `--reasoning-parser glm45` for GLM chat/tool
-  semantics.
-
-## Files
-
-| File | Purpose |
-| --- | --- |
-| `setup-venv.sh` | Creates `venv` and installs serving requirements. |
-| `download_model.sh` | Downloads the HF snapshot into `./model`. |
-| `start-gb10.sh` | Recommended GB10 launcher with conservative defaults. |
-| `start-low-gpu.sh` | Lower memory/power profile for shared use. |
-| `start.sh` | Starts backend, proxy, and token stats services. |
-| `glm_server.py` | vLLM OpenAI-compatible backend. |
-| `server_compress.py` | LiteLLM proxy with GLM history sanitization callbacks. |
-| `glm_compress.py` | Strips/thins reasoning, tool schemas, and long tool results. |
-| `glm_token_tracker.py` | SQLite-backed token usage callback. |
-| `token_stats_server.py` | Small stats UI/API on port 11113. |
-| `start_ngram.sh` | Enables vLLM prompt-lookup/n-gram speculative decoding. |
-| `start_mtp.sh` | Guarded off; this NVFP4 checkpoint currently breaks vLLM MTP. |
-| `kill.sh` | Stops local GLM/vLLM/LiteLLM processes and frees ports. |
-
-## Quick Start
+## Setup
 
 ```bash
 cd /Users/sna/Desktop/projects/ds4-glm
-./setup-venv.sh
-./download_model.sh
-./start-gb10.sh both
+./install.sh
 ```
 
-If you prefer not to download a local snapshot first, `start-gb10.sh` will load
-directly from `GadflyII/GLM-4.7-Flash-NVFP4` through the Hugging Face cache.
+`install.sh` runs the full local setup:
 
-Health checks:
+```bash
+./setup-dev-venv.sh
+./ensure-model.sh Q8_0
+make -C native
+```
+
+`ensure-model.sh` first checks whether `GLM-4.7-Flash-Q8_0.gguf` already exists
+in the Hugging Face cache on the DGX Spark. If present, it symlinks it into
+`./models/`. If missing, it downloads it and then creates the same symlink.
+
+Neither setup path installs an inference runtime. Native inference is built from
+the C code under `native/`; LiteLLM is only the VS Code/Copilot proxy.
+
+## Native Commands
+
+Inspect GGUF metadata and tensor table:
+
+```bash
+./native-inspect.sh
+./native/bin/glm-inspect --metadata --tensors models/GLM-4.7-Flash-Q8_0.gguf
+```
+
+Load the model through the native engine:
+
+```bash
+./start-gb10.sh inspect
+```
+
+Start native backend plus LiteLLM proxy:
+
+```bash
+./run-server-litellm.sh
+```
+
+Start only the native HTTP server shell:
+
+```bash
+./start-gb10.sh server
+```
+
+Health check:
 
 ```bash
 curl http://localhost:11112/health
-curl http://localhost:11111/health
 ```
 
-OpenAI-compatible chat request:
+Model list:
 
 ```bash
-curl http://localhost:11111/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{
-    "model": "glm-4.7-flash-nvfp4",
-    "messages": [{"role": "user", "content": "Explain KV cache in two sentences."}],
-    "max_tokens": 200
-  }'
+curl http://localhost:11112/v1/models
 ```
 
-## GB10 Profiles
+Chat/completions endpoints currently return `501 not_implemented` until the
+native forward pass exists.
 
-Recommended default:
-
-```bash
-./start-gb10.sh both
-```
-
-Conservative shared-machine profile:
-
-```bash
-./start-low-gpu.sh both
-```
-
-Full context attempt:
-
-```bash
-VLLM_MAX_MODEL_LEN=202752 VLLM_GPU_MEM_UTIL=0.70 ./start-gb10.sh both
-```
-
-Minimal RAM/cold-start profile:
-
-```bash
-VLLM_OPT_LEVEL=0 VLLM_MAX_MODEL_LEN=32768 VLLM_GPU_MEM_UTIL=0.45 ./start-gb10.sh both
-```
-
-N-gram speculative decoding for long prompts/RAG/code tasks:
-
-```bash
-./start_ngram.sh both
-```
-
-## Environment Knobs
-
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `GLM_MODEL_PATH` | HF repo or `./model` if present | Local snapshot or HF repo id. |
-| `GLM_SERVED_MODEL_NAME` | `GadflyII/GLM-4.7-Flash-NVFP4` | Name accepted by vLLM backend. |
-| `VLLM_MAX_MODEL_LEN` | `65536` via `start-gb10.sh` | Native max is `202752`. |
-| `VLLM_GPU_MEM_UTIL` | `0.50` | Increase for full context. |
-| `VLLM_OPT_LEVEL` | `1` | `0` eager, `1` CUDA graphs, avoid `3` on this model. |
-| `VLLM_MAX_NUM_BATCHED_TOKENS` | `65536` | Reduce if startup memory is tight. |
-| `GLM_PORT` | `11112` | vLLM backend. |
-| `LITE_LLM_PROXY_PORT` | `11111` | LiteLLM proxy. |
-| `GLM_TOKEN_STATS_PORT` | `11113` | Stats server. |
-
-## MTP Status
-
-The model config has `num_nextn_predict_layers: 1`, but the current
-`GadflyII/GLM-4.7-Flash-NVFP4` checkpoint NVFP4-quantizes the MTP `eh_proj`
-linear while vLLM's GLM MTP implementation expects it unquantized. The guarded
-`start_mtp.sh` script exits with an explanation instead of spending minutes
-loading and then failing with:
+LiteLLM endpoint for VS Code / Copilot-style clients:
 
 ```text
-KeyError: 'model.layers.47.eh_proj.input_global_scale'
+http://localhost:11111/v1/chat/completions
 ```
 
-Use the normal stack or `start_ngram.sh` until vLLM/checkpoint support changes.
+## Native Layout
 
-## Model Facts
+| File | Purpose |
+| --- | --- |
+| `native/glm_gguf.c` | Minimal GGUF metadata/tensor reader. |
+| `native/glm_engine.c` | Native model-load boundary and GLM metadata summary. |
+| `native/glm_inspect.c` | GGUF inspector and validator. |
+| `native/glm_native_cli.c` | DS4-style native CLI shell. |
+| `native/glm_native_server.c` | DS4-style native HTTP server shell. |
+| `server_compress.py` | LiteLLM proxy entrypoint for VS Code/Copilot compatibility. |
+| `native/Makefile` | Builds all native binaries. |
 
-- Hugging Face repo: <https://huggingface.co/GadflyII/GLM-4.7-Flash-NVFP4>
-- Base model: `zai-org/GLM-4.7-Flash`
-- Architecture: `Glm4MoeLiteForCausalLM`
-- Parameters: 30B total, 3B active per token
-- Experts: 64 routed, 4 active, 1 shared
-- Context: 202,752 tokens
-- Quantization: compressed-tensors NVFP4, mixed precision
-- License: Apache 2.0
+Generated binaries:
+
+```text
+native/bin/glm-inspect
+native/bin/glm-native
+native/bin/glm-native-server
+```
+
+## Why LiteLLM But Not llama-server?
+
+`llama-server` is an inference engine, so it is not used by the default path.
+LiteLLM is not doing inference here; it is only the OpenAI-compatible proxy that
+lets VS Code / GitHub Copilot plugin traffic reach the local native server.
+
+The native GLM port needs its own:
+
+- GLM tensor-name map.
+- GLM tokenizer/chat-template path.
+- CPU reference forward pass.
+- MoE router and expert matmul.
+- MLA attention and KV layout.
+- CUDA kernels for GB10.
+- Sampling and streaming server integration.
+
+## Milestones
+
+1. **GGUF load and validation**: current branch.
+2. **Tensor map**: map all GLM tensors into typed layer structures.
+3. **Tokenizer parity**: render/tokenize chat like the GGUF template expects.
+4. **CPU first-token forward pass**: correctness before speed.
+5. **Logit validation**: compare against a trusted runtime for fixed prompts.
+6. **CUDA GB10 kernels**: attention, MoE, dense projections, norm, sampling.
+7. **Full server generation**: OpenAI-compatible streaming completions.
+
+## Model Source
+
+The recommended model source is Unsloth's GGUF repo:
+
+```text
+unsloth/GLM-4.7-Flash-GGUF
+```
+
+The original `GadflyII/GLM-4.7-Flash-NVFP4` checkpoint is Safetensors /
+compressed-tensors NVFP4 and is not the native target for this repo.

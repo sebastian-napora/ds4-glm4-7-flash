@@ -1,16 +1,11 @@
 #!/usr/bin/env python3
-"""
-LiteLLM proxy for GLM-4.7-Flash-NVFP4.
+"""LiteLLM proxy for the custom native GLM backend.
 
 Architecture:
-    Copilot -> LiteLLM (11111) -> vLLM (11112)
+    VS Code / GitHub Copilot plugin -> LiteLLM (11111) -> glm-native-server (11112)
 
 Usage:
-    # Terminal 1: start vLLM backend on 11112
-    python3 glm_server.py
-
-    # Terminal 2: start LiteLLM proxy on 11111
-    python3 server_compress.py
+    ./start-gb10.sh both
 """
 
 import os
@@ -43,7 +38,7 @@ ch.setFormatter(logging.Formatter("%(asctime)s %(name)-25s %(levelname)-8s %(mes
 litellm_logger.addHandler(ch)
 
 litellm_logger.info("=" * 60)
-litellm_logger.info("LiteLLM GLM-4.7-Flash-NVFP4 Proxy Started")
+litellm_logger.info("LiteLLM GLM native proxy started")
 
 # Enable litellm verbose mode for debugging
 os.environ["LITELLM_LOG"] = "DEBUG"
