@@ -7,7 +7,7 @@ BIN_DIR := bin
 INSPECT := $(BIN_DIR)/glm-inspect
 CLI := $(BIN_DIR)/glm-native
 SERVER := $(BIN_DIR)/glm-native-server
-COMMON_SRCS := glm_gguf.c glm_engine.c
+COMMON_SRCS := glm_gguf.c glm_tensor.c glm_fwd.c glm_engine.c
 COMMON_OBJS := $(COMMON_SRCS:.c=.o)
 
 .PHONY: all clean
@@ -18,15 +18,15 @@ $(BIN_DIR):
 	mkdir -p $(BIN_DIR)
 
 $(INSPECT): glm_inspect.o $(COMMON_OBJS) | $(BIN_DIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ glm_inspect.o $(COMMON_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ glm_inspect.o $(COMMON_OBJS) -lm
 
 $(CLI): glm_native_cli.o $(COMMON_OBJS) | $(BIN_DIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ glm_native_cli.o $(COMMON_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ glm_native_cli.o $(COMMON_OBJS) -lm
 
 $(SERVER): glm_native_server.o $(COMMON_OBJS) | $(BIN_DIR)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ glm_native_server.o $(COMMON_OBJS)
+	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ glm_native_server.o $(COMMON_OBJS) -lm
 
-%.o: %.c glm_gguf.h glm_native.h glm_engine.h
+%.o: %.c
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c -o $@ $<
 
 clean:

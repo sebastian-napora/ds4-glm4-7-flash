@@ -64,7 +64,7 @@ start_backend() {
     make -C native
     echo "Starting glm-native-server on ${HOST}:${PORT}"
     "$SCRIPT_DIR/native/bin/glm-native-server" -m "$MODEL" --host "$HOST" --port "$PORT" \
-        >> "$SCRIPT_DIR/logs/glm-native-server.log" 2>&1 &
+        2>&1 | tee "$SCRIPT_DIR/logs/glm-native-server.log" &
     echo "$!" > "$SCRIPT_DIR/logs/glm-native-server.pid"
     echo "Native backend PID: $!"
 }
@@ -78,7 +78,7 @@ start_proxy() {
     export LITE_LLM_PROXY_PORT="$LITELLM_PORT"
     echo "Starting LiteLLM proxy on ${LITELLM_HOST}:${LITELLM_PORT}"
     "$VENV_PYTHON" "$SCRIPT_DIR/server_compress.py" \
-        >> "$SCRIPT_DIR/logs/litellm_proxy.log" 2>&1 &
+        2>&1 | tee "$SCRIPT_DIR/logs/litellm_proxy.log" &
     echo "$!" > "$SCRIPT_DIR/logs/litellm_proxy.pid"
     echo "LiteLLM PID: $!"
 }

@@ -41,4 +41,4 @@ if [ "$MODE" != "proxy" ] && [ ! -s "$MODEL" ]; then
     "$SCRIPT_DIR/ensure-model.sh" "${GLM_GGUF_QUANT:-Q8_0}"
 fi
 
-exec "$SCRIPT_DIR/start.sh" "$MODE"
+exec "$SCRIPT_DIR/start.sh" "$MODE" 2>&1 | tee "$SCRIPT_DIR/logs/startup.log"

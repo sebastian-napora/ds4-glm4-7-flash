@@ -1,0 +1,48 @@
+# LiteLLM Proxy Configuration for llama.cpp backend (separate from native engine)
+#
+# Architecture:
+#   VS Code / GitHub Copilot plugin -> LiteLLM (12111) -> llama-server (12112)
+#
+# This config is for the *llama.cpp* pipeline. The native engine has its own
+# config at lite_llm_config.yaml on ports 11111/11112.
+
+model_list:
+  - model_name: glm-4.7-flash-llamacpp
+    litellm_params:
+      model: openai/glm-4.7-flash-llamacpp
+      api_base: http://localhost:12112/v1
+      api_key: none
+      max_tokens: 60000
+      temperature: 1.0
+      top_p: 0.95
+    model_info:
+      mode: chat
+      supports_function_calling: true
+      supports_vision: false
+      context_window: 65536
+
+  - model_name: glm47flash-llamacpp
+    litellm_params:
+      model: openai/glm-4.7-flash-llamacpp
+      api_base: http://localhost:12112/v1
+      api_key: none
+      max_tokens: 60000
+      temperature: 1.0
+      top_p: 0.95
+    model_info:
+      mode: chat
+      supports_function_calling: true
+      supports_vision: false
+      context_window: 65536
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 600
+  set_verbose: false
+  json_logs: false
+  max_parallel_requests: 1
+
+general_settings:
+  completion_model: "glm-4.7-flash-llamacpp"
+  database_url: null
+  store_model_in_db: false
