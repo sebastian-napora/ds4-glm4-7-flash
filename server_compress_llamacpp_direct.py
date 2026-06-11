@@ -19,6 +19,7 @@ Both run in the foreground so all output streams to the terminal.
 """
 
 import asyncio
+import html
 import json
 import logging
 import os
@@ -48,19 +49,20 @@ _log = logging.getLogger("glm-xml-proxy")  # used throughout
 # ── GLM XML tool_calls extractor ────────────────────────────────────────────────
 
 class GLMToolCallExtractor:
-    """Accumulate streamed text and extract complete <tool_call>...</tool_call> blocks.
+    """Accumulate streamed text and extract complete XML tool-call blocks.
 
     GLM-4.7-Flash outputs tool_calls as XML fragments across multiple SSE chunks.
     This extractor buffers text, detects complete blocks, converts them to OpenAI
     tool_calls format, and strips the XML from the streamed content delta.
     """
 
-    def __init__(self):
+    def __init__(self, allowed_tool_names: set[str] | None = None):
         self._buffer = ""
         self._tool_calls: list[dict] = []
         self._content_parts: list[str] = []
         self._base: dict = {}       # id / created / model from first chunk
         self._seen_finish = False
+        self._allowed_tool_names = allowed_tool_names or set()
 
     def ingest_text(self, text: str) -> list[tuple[str, str | dict]]:
         """Feed raw text delta. Returns list of (event_type, data) to emit."""
@@ -68,18 +70,12 @@ class GLMToolCallExtractor:
         self._buffer += text
 
         while self._buffer:
-            end_tag = "</tool_call>"
-            start_tag = "<tool_call>"
-            start = self._buffer.find(start_tag)
+            call_start = self._find_next_call_start()
 
-            if start < 0:
-                # No complete tag — but the buffer may end with a partial
-                # "<tool_call>" prefix split across SSE chunks. Hold it back.
-                keep = 0
-                for plen in range(min(len(start_tag) - 1, len(self._buffer)), 0, -1):
-                    if self._buffer.endswith(start_tag[:plen]):
-                        keep = plen
-                        break
+            if call_start is None:
+                # No complete tag start, but the buffer may end with a partial
+                # XML prefix split across SSE chunks. Hold that suffix back.
+                keep = self._partial_call_prefix_len()
                 emit = self._buffer[:-keep] if keep else self._buffer
                 if emit.strip():
                     self._content_parts.append(emit)
@@ -87,27 +83,71 @@ class GLMToolCallExtractor:
                 self._buffer = self._buffer[len(self._buffer) - keep:] if keep else ""
                 break
 
-            # Emit content before this <tool_call> tag
+            start, tag_name, open_tag_len = call_start
+
+            # Emit content before this tool-call tag
             if start > 0:
                 self._content_parts.append(self._buffer[:start])
                 results.append(("content", self._buffer[:start]))
                 self._buffer = self._buffer[start:]
 
-            # Find the closing </tool_call> (buffer still starts with <tool_call>)
+            end_tag = f"</{tag_name}>"
+
+            # Find the closing tag (buffer still starts with opening tag)
             end = self._buffer.find(end_tag)
             if end < 0:
                 # Incomplete block — keep entire tagged buffer and wait for more
                 break
 
-            block = self._buffer[len(start_tag):end]
+            block = self._buffer[open_tag_len:end]
             self._buffer = self._buffer[end + len(end_tag):]
 
-            tc = self._parse_tool_call(block)
+            if tag_name == "tool_call":
+                tc = self._parse_tool_call(block)
+            else:
+                tc = self._parse_direct_tool_call(tag_name, block)
             if tc:
                 self._tool_calls.append(tc)
                 results.append(("tool_call", tc))
 
         return results
+
+    def _find_next_call_start(self) -> tuple[int, str, int] | None:
+        """Return (start_index, tag_name, opening_tag_length) for next call tag."""
+        matches: list[tuple[int, str, int]] = []
+
+        normalized_start = self._buffer.find("<tool_call>")
+        if normalized_start >= 0:
+            matches.append((normalized_start, "tool_call", len("<tool_call>")))
+
+        for tool_name in self._allowed_tool_names:
+            if not tool_name or tool_name == "tool_call":
+                continue
+            match = re.search(
+                rf"<{re.escape(tool_name)}(?:\s[^>]*)?>",
+                self._buffer,
+                re.DOTALL,
+            )
+            if match:
+                matches.append((match.start(), tool_name, match.end() - match.start()))
+
+        if not matches:
+            return None
+        return min(matches, key=lambda item: item[0])
+
+    def _partial_call_prefix_len(self) -> int:
+        """How many trailing chars to keep because they may start a tool tag."""
+        candidates = ["<tool_call>"]
+        candidates.extend(f"<{name}" for name in self._allowed_tool_names if name)
+
+        keep = 0
+        for candidate in candidates:
+            max_len = min(len(candidate) - 1, len(self._buffer))
+            for plen in range(max_len, 0, -1):
+                if self._buffer.endswith(candidate[:plen]):
+                    keep = max(keep, plen)
+                    break
+        return keep
 
     def _parse_tool_call(self, xml_block: str) -> dict | None:
         """Parse the inner text of a <tool_call>...</tool_call> block (tags already
@@ -138,6 +178,40 @@ class GLMToolCallExtractor:
                     args[key] = raw_val
             else:
                 args[key] = raw_val
+
+        tc_id = f"call_{''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=24))}"
+        return {
+            "index": len(self._tool_calls),
+            "id": tc_id,
+            "type": "function",
+            "function": {
+                "name": tool_name,
+                "arguments": json.dumps(args, ensure_ascii=False),
+            },
+        }
+
+    def _parse_direct_tool_call(self, tool_name: str, xml_block: str) -> dict | None:
+        """Parse leaked direct tool tags, e.g. <runSubagent><prompt>...</prompt>."""
+        args: dict = {}
+        for match in re.finditer(
+            r"<([A-Za-z_][A-Za-z0-9_.:-]*)\b[^>]*>(.*?)</\1>",
+            xml_block,
+            re.DOTALL,
+        ):
+            key = match.group(1).strip()
+            raw_val = html.unescape(match.group(2).strip())
+            stripped = raw_val.strip()
+            if stripped and stripped[0] in "{[0123456789-tfn":
+                try:
+                    args[key] = json.loads(stripped)
+                except (json.JSONDecodeError, ValueError):
+                    args[key] = raw_val
+            else:
+                args[key] = raw_val
+
+        if not args:
+            _log.warning("Cannot parse direct tool_call args for %s: %s", tool_name, xml_block[:120])
+            return None
 
         tc_id = f"call_{''.join(random.choices('abcdefghijklmnopqrstuvwxyz0123456789', k=24))}"
         return {
@@ -368,10 +442,32 @@ def _tool_prompt(tools: list[dict]) -> str:
         "</tool_call>\n"
         "Use one <arg_key>/<arg_value> pair for each argument. Use the exact tool "
         "name and argument names from the available tools below. For booleans, "
-        "numbers, arrays, or objects, put valid JSON in <arg_value>.\n\n"
+        "numbers, arrays, or objects, put valid JSON in <arg_value>. Do not output "
+        "direct tool-name XML tags such as <runSubagent> or internal planning "
+        "wrappers; convert every tool action to the <tool_call> format above.\n\n"
         "Available tools:\n"
         + "\n".join(rendered_tools)
     )
+
+
+def _extract_tool_names(body_str: str) -> set[str]:
+    """Return OpenAI function tool names from a request body."""
+    try:
+        payload = json.loads(body_str)
+    except (json.JSONDecodeError, TypeError):
+        return set()
+
+    names: set[str] = set()
+    for tool in payload.get("tools") or []:
+        if not isinstance(tool, dict):
+            continue
+        fn = tool.get("function", {})
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name")
+        if isinstance(name, str) and name:
+            names.add(name)
+    return names
 
 
 def _prompt_tools_and_disable_native(body_str: str) -> tuple[str, int, bool]:
@@ -492,6 +588,7 @@ async def proxy_chat(request: Request) -> Response:
 
     # Step 2: Replace tools with our simple 4-tool set (if enabled)
     replaced_body_str, orig_tool_count = _replace_tools_with_simple(fixed_body_str)
+    tool_names = _extract_tool_names(replaced_body_str)
 
     # Step 3: Prompt tools as XML instructions, then remove native tool schemas so
     # llama.cpp does not attempt to parse GLM's XML tool-call text itself.
@@ -548,7 +645,7 @@ async def proxy_chat(request: Request) -> Response:
                     )
 
                 # ── Streaming transform ────────────────────────────────────────
-                acc = GLMToolCallExtractor()
+                acc = GLMToolCallExtractor(allowed_tool_names=tool_names)
                 output_lines: list[bytes] = []
                 native_tool_calls = False
 
