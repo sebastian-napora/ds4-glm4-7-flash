@@ -17,6 +17,7 @@
 #   GLM_MODEL=/path/to/file.gguf ./llamacpp_server.sh
 #   LLAMA_NGL=20 ./llamacpp_server.sh                   # offload only 20 layers to GPU
 #   LLAMA_CTX=65536 ./llamacpp_server.sh
+#   LLAMA_SPEC_TYPE=ngram-cache ./llamacpp_server.sh
 #
 # Environment:
 #   GLM_GGUF_QUANT        Quantization variant (default: Q6_K)
@@ -27,7 +28,12 @@
 #   LLAMA_CTX             Context size (default: 65536)
 #   LLAMA_THREADS         CPU threads (default: nproc)
 #   LLAMA_PARALLEL        Parallel slots (default: 1)
-#   LLAMA_FLASH_ATTN      Enable flash attention (default: 1)
+#   LLAMA_FLASH_ATTN      Flash attention mode: on|off|auto (default: auto)
+#   LLAMA_SPEC_TYPE       Speculative decoding mode (default: none)
+#                         Examples: ngram-cache, ngram-simple, draft-simple
+#   LLAMA_SPEC_DRAFT_MODEL Draft model path for draft-based speculation
+#   LLAMA_SPEC_DRAFT_N_MAX Max drafted tokens for draft speculation (default: 3)
+#   LLAMA_SERVER_EXTRA_ARGS Extra raw args appended to llama-server
 
 set -euo pipefail
 
@@ -54,7 +60,11 @@ NGL="${LLAMA_NGL:-999}"
 CTX="${LLAMA_CTX:-65536}"
 THREADS="${LLAMA_THREADS:-$(nproc)}"
 PARALLEL="${LLAMA_PARALLEL:-1}"
-FLASH_ATTN="${LLAMA_FLASH_ATTN:-1}"
+FLASH_ATTN="${LLAMA_FLASH_ATTN:-auto}"
+SPEC_TYPE="${LLAMA_SPEC_TYPE:-none}"
+DRAFT_MODEL="${LLAMA_SPEC_DRAFT_MODEL:-}"
+DRAFT_N_MAX="${LLAMA_SPEC_DRAFT_N_MAX:-3}"
+EXTRA_ARGS="${LLAMA_SERVER_EXTRA_ARGS:-}"
 
 # ── Validate model ──────────────────────────────────────────────────────────────
 if [ ! -e "$MODEL" ]; then
@@ -80,9 +90,6 @@ fi
 
 mkdir -p "$SCRIPT_DIR/logs"
 
-FA_ARG=""
-if [ "$FLASH_ATTN" = "1" ]; then FA_ARG="--flash-attn auto"; fi
-
 # ── Print config ────────────────────────────────────────────────────────────────
 echo
 echo "┌─────────────────────────────────────────────────────┐"
@@ -93,17 +100,38 @@ printf "│  Endpoint:   http://%s:%s                  │\n" "$GLM_HOST" "$GLM_
 printf "│  GPU layers: %-37s │\n" "$NGL"
 printf "│  Context:    %-37s │\n" "$CTX"
 printf "│  Threads:    %-37s │\n" "$THREADS"
+printf "│  Spec:       %-37s │\n" "$SPEC_TYPE"
 echo "└─────────────────────────────────────────────────────┘"
 echo
 
-exec "$LLAMA_BIN" \
-    -m "$MODEL" \
-    --host "$GLM_HOST" \
-    --port "$GLM_PORT" \
-    -ngl "$NGL" \
-    -c "$CTX" \
-    -t "$THREADS" \
-    -np "$PARALLEL" \
-    --jinja \
-    --alias glm-4.7-flash-llamacpp \
-    $FA_ARG
+args=(
+    "$LLAMA_BIN"
+    -m "$MODEL"
+    --host "$GLM_HOST"
+    --port "$GLM_PORT"
+    -ngl "$NGL"
+    -c "$CTX"
+    -t "$THREADS"
+    -np "$PARALLEL"
+    --jinja
+    --alias glm-4.7-flash-llamacpp
+)
+
+if [ "$FLASH_ATTN" != "off" ]; then
+    args+=(--flash-attn "$FLASH_ATTN")
+fi
+
+if [ "$SPEC_TYPE" != "none" ]; then
+    args+=(--spec-type "$SPEC_TYPE")
+fi
+
+if [ -n "$DRAFT_MODEL" ]; then
+    args+=(--spec-draft-model "$DRAFT_MODEL" --spec-draft-n-max "$DRAFT_N_MAX")
+fi
+
+if [ -n "$EXTRA_ARGS" ]; then
+    read -r -a extra_args <<< "$EXTRA_ARGS"
+    args+=("${extra_args[@]}")
+fi
+
+exec "${args[@]}"

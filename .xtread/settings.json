@@ -144,7 +144,26 @@
       "Bash(offset_off *)",
       "Bash(offset *)",
       "Bash(readelf *)",
-      "Bash(./venv/bin/python *)"
+      "Bash(./venv/bin/python *)",
+      "Read(//home/sna/.qwen/**)",
+      "Read(//home/sna/ai-projects/qwen-code/dist/bundled/qc-helper/docs/configuration/**)",
+      "Read(//home/sna/.xtread/**)",
+      "Read(//home/sna/ai-projects/glm_4_7_flash_setup/**)",
+      "Bash(/home/sna/ai-projects/ds4-glm4-7-flash/third_party/llama.cpp/build/bin/llama-server *)",
+      "Bash(./start_llamacpp_litellm.sh)",
+      "Bash(venv/bin/python3 *)",
+      "Bash(setsid *)",
+      "Bash(./llamacpp_server.sh)",
+      "Bash(disown)",
+      "Bash(trap *)",
+      "Bash(hostname)",
+      "Bash(pgrep *)",
+      "Bash(./venv/bin/pip *)",
+      "Bash(./venv/bin/python3 *)",
+      "Bash(xargs *)",
+      "Bash(./build/bin/llama-server *)",
+      "Bash(./third_party/llama.cpp/build/bin/llama-server *)",
+      "Bash(./start_llamacpp_direct.sh)"
     ]
   },
   "$version": 3

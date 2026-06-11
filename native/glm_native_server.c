@@ -479,6 +479,20 @@ static void handle_client(int fd, glm_engine *engine) {
     if (!body_start) body_start = req + n;
     else body_start += 4;
 
+    // CORS preflight — must precede any route check so OPTIONS works globally
+    if (!strcmp(method, "OPTIONS")) {
+        static const char opts[] =
+            "HTTP/1.1 204 No Content\r\n"
+            "Access-Control-Allow-Origin: *\r\n"
+            "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+            "Access-Control-Allow-Headers: Content-Type, Authorization, X-Requested-With, *\r\n"
+            "Access-Control-Max-Age: 86400\r\n"
+            "Connection: close\r\n"
+            "\r\n";
+        send_all(fd, opts, sizeof(opts) - 1);
+        return;
+    }
+
     if (!strcmp(method, "GET") && !strcmp(path, "/health")) {
         handle_health(fd, engine);
         return;

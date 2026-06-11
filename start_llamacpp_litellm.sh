@@ -9,6 +9,7 @@
 #
 # Tool calling is enabled through the llama.cpp OpenAI-compatible endpoint and
 # advertised in lite_llm_config_llamacpp.yaml. Default context is 65,536 tokens.
+# Optional speculative decoding can be enabled with LLAMA_SPEC_TYPE=ngram-cache.
 
 set -euo pipefail
 
@@ -19,7 +20,8 @@ LLAMA_HOST="${GLM_HOST:-0.0.0.0}"
 LLAMA_PORT="${GLM_PORT:-12112}"
 LITELLM_HOST="${LITE_LLM_PROXY_HOST:-0.0.0.0}"
 LITELLM_PORT="${LITE_LLM_PROXY_PORT:-12111}"
-LLAMA_CTX="${LLAMA_CTX:-65536}"
+LLAMA_CTX="${LLAMA_CTX:-130000}"
+LLAMA_SPEC_TYPE="${LLAMA_SPEC_TYPE:-none}"
 usage() {
     cat <<EOF
 Usage: $0
@@ -33,10 +35,15 @@ Environment:
   GLM_PORT              llama.cpp port. Default: 12112
   LITE_LLM_PROXY_HOST   LiteLLM bind host. Default: 0.0.0.0
   LITE_LLM_PROXY_PORT   LiteLLM port. Default: 12111
-  LLAMA_CTX             Context size. Default: 65536
+  LLAMA_CTX             Context size. Default: 130000
   LLAMA_NGL             GPU layers to offload. Default: 999
   LLAMA_THREADS         CPU threads for llama.cpp. Default: nproc
   LLAMA_PARALLEL        Parallel request slots. Default: 1
+  LLAMA_FLASH_ATTN      on|off|auto. Default: auto
+  LLAMA_SPEC_TYPE       Speculative decoding mode. Default: none
+  LLAMA_SPEC_DRAFT_MODEL Draft model path for draft-based speculation
+  LLAMA_SPEC_DRAFT_N_MAX Max drafted tokens. Default: 3
+  LLAMA_SERVER_EXTRA_ARGS Extra raw args appended to llama-server
   GLM_MODEL             GGUF path. Default: models/GLM-4.7-Flash-Q6_K.gguf
   PYTHON_BIN            Override python if venv/bin/python3 is unavailable
 EOF
@@ -100,12 +107,14 @@ echo "├───────────────────────�
 printf "│  llama.cpp:  http://%s:%s                  │\n" "$LLAMA_HOST" "$LLAMA_PORT"
 printf "│  LiteLLM:    http://%s:%s/v1               │\n" "$LITELLM_HOST" "$LITELLM_PORT"
 printf "│  Context:    %-37s │\n" "$LLAMA_CTX"
+printf "│  Spec:       %-37s │\n" "$LLAMA_SPEC_TYPE"
 printf "│  Config:     %-37s │\n" "lite_llm_config_llamacpp.yaml"
 echo "└─────────────────────────────────────────────────────┘"
 echo
 
 echo "Starting llama.cpp..."
 GLM_HOST="$LLAMA_HOST" GLM_PORT="$LLAMA_PORT" LLAMA_CTX="$LLAMA_CTX" \
+LLAMA_SPEC_TYPE="$LLAMA_SPEC_TYPE" \
     "$SCRIPT_DIR/llamacpp_server.sh" &
 LLAMA_PID=$!
 
@@ -126,6 +135,8 @@ if ! curl -fsS "http://127.0.0.1:${LLAMA_PORT}/v1/models" >/dev/null 2>&1; then
 fi
 
 echo "Starting LiteLLM..."
+LLAMA_BACKEND_PORT="$LLAMA_PORT" \
+LITELLM_BACKEND_API_BASE="http://127.0.0.1:${LLAMA_PORT}/v1" \
 LITE_LLM_PROXY_HOST="$LITELLM_HOST" \
 LITE_LLM_PROXY_PORT="$LITELLM_PORT" \
     "$VENV_PYTHON" "$SCRIPT_DIR/server_compress_llamacpp.py" &
@@ -149,8 +160,8 @@ fi
 
 echo
 echo "Ready:"
-echo "  llama.cpp: http://127.0.0.1:${LLAMA_PORT}/v1/models"
-echo "  LiteLLM:   http://127.0.0.1:${LITELLM_PORT}/v1/models"
+echo "  llama.cpp: http://0.0.0.0:${LLAMA_PORT}/v1/models"
+echo "  LiteLLM:   http://0.0.0.0:${LITELLM_PORT}/v1/models"
 echo "Press Ctrl+C to stop both."
 echo
 

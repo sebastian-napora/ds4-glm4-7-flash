@@ -12,28 +12,28 @@ model_list:
       model: openai/glm-4.7-flash-llamacpp
       api_base: http://localhost:12112/v1
       api_key: none
-      max_tokens: 60000
+      max_tokens: 130000
       temperature: 1.0
       top_p: 0.95
     model_info:
       mode: chat
       supports_function_calling: true
       supports_vision: false
-      context_window: 65536
+      context_window: 130000
 
   - model_name: glm47flash-llamacpp
     litellm_params:
       model: openai/glm-4.7-flash-llamacpp
       api_base: http://localhost:12112/v1
       api_key: none
-      max_tokens: 60000
+      max_tokens: 130000
       temperature: 1.0
       top_p: 0.95
     model_info:
       mode: chat
       supports_function_calling: true
       supports_vision: false
-      context_window: 65536
+      context_window: 130000
 
 litellm_settings:
   drop_params: true

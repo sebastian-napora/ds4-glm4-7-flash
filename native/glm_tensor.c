@@ -135,6 +135,7 @@ static bool read_f32(const glm_gguf_model *m, const glm_gguf_tensor *t,
 
 static bool load_f32(const glm_gguf_model *m, const glm_gguf_tensor *t,
                      glm_tensor_f32 *out, uint64_t off, uint64_t *inout_fpos) {
+    (void)off;
     uint64_t rows = t->dim[0];
     uint64_t cols = t->ndim >= 2 ? t->dim[1] : 1;
     out->data = (float *)calloc(rows * cols, sizeof(float));
@@ -151,6 +152,7 @@ static bool load_f32(const glm_gguf_model *m, const glm_gguf_tensor *t,
 // to current file position when stored offset is invalid.
 static bool load_quant_2d(const glm_gguf_model *m, const glm_gguf_tensor *t,
                          glm_tensor_f32 *out, uint64_t base_off, uint64_t *inout_fpos) {
+    (void)base_off;
     if (t->ndim != 2) {
         set_err("tensor %s has %u dims, expected 2", t->name, t->ndim);
         return false;
@@ -164,7 +166,8 @@ static bool load_quant_2d(const glm_gguf_model *m, const glm_gguf_tensor *t,
         out->data = (float *)calloc(rows * cols, sizeof(float));
         if (!out->data) { set_err("OOM %s rows=%lu cols=%lu", t->name, (unsigned long)rows, (unsigned long)cols); return false; }
         out->rows = (uint32_t)rows; out->cols = (uint32_t)cols; out->is_quant = false;
-        uint64_t seek_pos = base_off + t->offset; (void)inout_fpos;
+        uint64_t seek_pos = m->tensor_data_offset + t->offset;
+        if (seek_pos >= (uint64_t)1 << 62) { set_err("%s: implausible offset %lu", t->name, (unsigned long)seek_pos); return false; }
         if (fseek(m->fp, (long)seek_pos, SEEK_SET) != 0) { set_err("%s seek %lu failed", t->name, (unsigned long)seek_pos); free(out->data); return false; }
         uint8_t *buf = (uint8_t *)malloc((size_t)row_bytes);
         if (!buf) { set_err("%s buf alloc failed", t->name); free(out->data); return false; }
@@ -176,7 +179,7 @@ static bool load_quant_2d(const glm_gguf_model *m, const glm_gguf_tensor *t,
             dequant_row_q8((const int8_t *)buf, out->data + r * cols, (uint32_t)cols);
         }
         free(buf);
-        *inout_fpos = (uint64_t)ftell(m->fp);
+        if (inout_fpos) *inout_fpos = (uint64_t)ftell(m->fp);
         return true;
     } else if (t->type == T_Q6_K) {
         uint32_t sup_per_row = (uint32_t)((cols + 255) / 256);
@@ -184,7 +187,8 @@ static bool load_quant_2d(const glm_gguf_model *m, const glm_gguf_tensor *t,
         out->data = (float *)calloc(rows * cols, sizeof(float));
         if (!out->data) { set_err("OOM"); return false; }
         out->rows = (uint32_t)rows; out->cols = (uint32_t)cols; out->is_quant = false;
-        uint64_t seek_pos = base_off + t->offset; (void)inout_fpos;
+        uint64_t seek_pos = m->tensor_data_offset + t->offset;
+        if (seek_pos >= (uint64_t)1 << 62) { set_err("%s: implausible offset %lu", t->name, (unsigned long)seek_pos); return false; }
         if (fseek(m->fp, (long)seek_pos, SEEK_SET) != 0) { free(out->data); return false; }
         uint8_t *buf = (uint8_t *)malloc((size_t)row_bytes);
         if (!buf) { free(out->data); return false; }
@@ -195,7 +199,7 @@ static bool load_quant_2d(const glm_gguf_model *m, const glm_gguf_tensor *t,
             dequant_row_q6(buf, out->data + r * cols, (uint32_t)cols);
         }
         free(buf);
-        *inout_fpos = (uint64_t)ftell(m->fp);
+        if (inout_fpos) *inout_fpos = (uint64_t)ftell(m->fp);
         return true;
     } else {
         free(out->data);
@@ -209,6 +213,7 @@ static bool load_quant_2d(const glm_gguf_model *m, const glm_gguf_tensor *t,
 // GGUF layout: [inner][mid][heads]. Our dest: [heads*inner][mid]
 static bool load_q8_3d_attn(const glm_gguf_model *m, const glm_gguf_tensor *t,
                               glm_tensor_f32 *out, uint64_t off, uint64_t *inout_fpos) {
+    (void)off;
     if (t->ndim != 3) { set_err("tensor %s is not 3D", t->name); return false; }
     uint64_t inner = t->dim[0];
     uint64_t mid   = t->dim[1];
@@ -221,7 +226,7 @@ static bool load_q8_3d_attn(const glm_gguf_model *m, const glm_gguf_tensor *t,
     out->rows = (uint32_t)rows; out->cols = (uint32_t)cols; out->is_quant = false;
 
     uint64_t seek_pos = m->tensor_data_offset + t->offset;
-    if (t->offset == 0 && inout_fpos) seek_pos = *inout_fpos;
+    if (seek_pos >= (uint64_t)1 << 62) { set_err("%s bad offset", t->name); return false; }
     if (fseek(m->fp, (long)seek_pos, SEEK_SET) != 0) { free(out->data); return false; }
 
     if (t->type == T_Q8_0) {
@@ -257,6 +262,7 @@ static bool load_q8_3d_attn(const glm_gguf_model *m, const glm_gguf_tensor *t,
         set_err("tensor %s has unsupported type %u for 3D attn", t->name, t->type);
         return false;
     }
+    if (inout_fpos) *inout_fpos = (uint64_t)ftell(m->fp);
     return true;
 }
 
@@ -265,7 +271,8 @@ static bool load_q8_3d_attn(const glm_gguf_model *m, const glm_gguf_tensor *t,
 // ffn_down_exps [1536][2048][64] -> [98304][2048]
 // GGUF: [F][H][E] row-major. Dest: [E*F][H] rows interleaved by expert.
 static bool load_q8_3d_moe(const glm_gguf_model *m, const glm_gguf_tensor *t,
-                            glm_tensor_f32 *out, uint64_t off) {
+                            glm_tensor_f32 *out, uint64_t off, uint64_t *inout_fpos) {
+    (void)off;
     if (t->ndim != 3) { set_err("tensor %s is not 3D", t->name); return false; }
     uint64_t F = t->dim[0];
     uint64_t H = t->dim[1];
@@ -277,8 +284,9 @@ static bool load_q8_3d_moe(const glm_gguf_model *m, const glm_gguf_tensor *t,
     if (!out->data) { set_err("OOM"); return false; }
     out->rows = (uint32_t)rows; out->cols = (uint32_t)cols; out->is_quant = false;
 
-    (void)off;
-    if (fseek(m->fp, (long)(m->tensor_data_offset + t->offset), SEEK_SET) != 0) { free(out->data); return false; }
+    uint64_t seek_pos = m->tensor_data_offset + t->offset;
+    if (seek_pos >= (uint64_t)1 << 62) { set_err("%s bad offset", t->name); return false; }
+    if (fseek(m->fp, (long)seek_pos, SEEK_SET) != 0) { free(out->data); return false; }
 
     if (t->type == T_Q8_0) {
         uint32_t blk_per_row = (uint32_t)((cols + 31) / 32);
@@ -313,6 +321,7 @@ static bool load_q8_3d_moe(const glm_gguf_model *m, const glm_gguf_tensor *t,
         set_err("tensor %s has unsupported type %u for 3D MoE", t->name, t->type);
         return false;
     }
+    if (inout_fpos) *inout_fpos = (uint64_t)ftell(m->fp);
     return true;
 }
 
@@ -342,7 +351,7 @@ static bool load_layer(const glm_gguf_model *m, struct layer_weights *lw,
 
     snprintf(key, sizeof(key), "blk.%d.attn_k_b.weight", layer);
     t = find_tensor(m, key);
-    if (!t || t->ndim != 3 || !load_q8_3d_attn(m, t, &lw->attn_k_b, off)) { if (!t) set_err("missing %s", key); return false; }
+    if (!t || t->ndim != 3 || !load_q8_3d_attn(m, t, &lw->attn_k_b, off, &off)) { if (!t) set_err("missing %s", key); return false; }
 
     snprintf(key, sizeof(key), "blk.%d.attn_kv_a_mqa.weight", layer);
     t = find_tensor(m, key);
@@ -354,7 +363,7 @@ static bool load_layer(const glm_gguf_model *m, struct layer_weights *lw,
 
     snprintf(key, sizeof(key), "blk.%d.attn_v_b.weight", layer);
     t = find_tensor(m, key);
-    if (!t || t->ndim != 3 || !load_q8_3d_attn(m, t, &lw->attn_v_b, off)) { if (!t) set_err("missing %s", key); return false; }
+    if (!t || t->ndim != 3 || !load_q8_3d_attn(m, t, &lw->attn_v_b, off, &off)) { if (!t) set_err("missing %s", key); return false; }
 
     snprintf(key, sizeof(key), "blk.%d.attn_output.weight", layer);
     t = find_tensor(m, key);
@@ -388,15 +397,15 @@ static bool load_layer(const glm_gguf_model *m, struct layer_weights *lw,
 
         snprintf(key, sizeof(key), "blk.%d.ffn_gate_exps.weight", layer);
         t = find_tensor(m, key);
-        if (!t || t->ndim != 3 || !load_q8_3d_moe(m, t, &lw->ffn_gate_exps, off)) { if (!t) set_err("missing %s", key); return false; }
+        if (!t || t->ndim != 3 || !load_q8_3d_moe(m, t, &lw->ffn_gate_exps, off, &off)) { if (!t) set_err("missing %s", key); return false; }
 
         snprintf(key, sizeof(key), "blk.%d.ffn_up_exps.weight", layer);
         t = find_tensor(m, key);
-        if (!t || t->ndim != 3 || !load_q8_3d_moe(m, t, &lw->ffn_up_exps, off)) { if (!t) set_err("missing %s", key); return false; }
+        if (!t || t->ndim != 3 || !load_q8_3d_moe(m, t, &lw->ffn_up_exps, off, &off)) { if (!t) set_err("missing %s", key); return false; }
 
         snprintf(key, sizeof(key), "blk.%d.ffn_down_exps.weight", layer);
         t = find_tensor(m, key);
-        if (!t || t->ndim != 3 || !load_q8_3d_moe(m, t, &lw->ffn_down_exps, off)) { if (!t) set_err("missing %s", key); return false; }
+        if (!t || t->ndim != 3 || !load_q8_3d_moe(m, t, &lw->ffn_down_exps, off, &off)) { if (!t) set_err("missing %s", key); return false; }
 
         snprintf(key, sizeof(key), "blk.%d.ffn_gate_shexp.weight", layer);
         t = find_tensor(m, key);

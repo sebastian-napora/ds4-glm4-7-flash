@@ -1,0 +1,52 @@
+# LiteLLM Proxy Configuration for llama.cpp GLM backend — with XML transform proxy.
+#
+# Architecture:
+#   VS Code / GitHub Copilot plugin -> LiteLLM (12111) -> XML proxy (12180) -> llama-server (12112)
+#
+# The XML proxy (server_compress_llamacpp_direct.py, runs on port 12180) does:
+#   1. Replaces Copilot's 94 tools with a 4-tool set (read_file/write_file/edit_file/delete_file)
+#   2. Fixes GBNF grammar escapes (\d \w \s etc) so llama.cpp can parse them
+#   3. Converts GLM XML <tool_call> output to OpenAI JSON tool_calls
+#   4. Disables extended-thinking tokens (--reasoning-budget 0)
+#
+# LiteLLM here acts as a passthrough — it just forwards requests to the XML proxy.
+# No custom LiteLLM callbacks needed; all logic lives in the XML proxy.
+
+model_list:
+  - model_name: glm-4.7-flash-llamacpp
+    litellm_params:
+      model: openai/glm-4.7-flash-llamacpp
+      api_base: http://localhost:12180/v1
+      api_key: none
+      max_tokens: 60000
+      temperature: 0.7
+      top_p: 0.95
+    model_info:
+      mode: chat
+      supports_function_calling: true
+      supports_vision: false
+      context_window: 202752
+
+  - model_name: glm47flash-llamacpp
+    litellm_params:
+      model: openai/glm-4.7-flash-llamacpp
+      api_base: http://localhost:12180/v1
+      api_key: none
+      max_tokens: 60000
+      temperature: 0.7
+      top_p: 0.95
+    model_info:
+      mode: chat
+      supports_function_calling: true
+      supports_vision: false
+      context_window: 202752
+
+litellm_settings:
+  drop_params: true
+  request_timeout: 600
+  set_verbose: false
+  json_logs: false
+  max_parallel_requests: 1
+
+general_settings:
+  completion_model: "glm-4.7-flash-llamacpp"
