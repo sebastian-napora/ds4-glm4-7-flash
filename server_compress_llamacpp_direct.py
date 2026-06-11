@@ -714,8 +714,11 @@ async def proxy_chat(request: Request) -> Response:
                     # ── Finish chunk handling ─────────────────────────────────
                     acc._seen_finish = True
                     if acc.has_tool_calls and not native_tool_calls:
-                        # XML tool_calls were already streamed as deltas; rewrite
-                        # the finish_reason so clients execute them.
+                        # XML tool calls can be preceded by model chatter like
+                        # "I'll fetch that...". Once a tool call is detected,
+                        # return only tool-call deltas so clients do not display
+                        # the XML-planning preamble as assistant text.
+                        output_lines = [_chunk_to_line(_tool_call_delta_chunk(tc, acc._base)) for tc in acc._tool_calls]
                         output_lines.append(_chunk_to_line(finish_chunk(
                             "tool_calls",
                             parsed.get("id", ""), parsed.get("created", 0),
@@ -738,6 +741,8 @@ async def proxy_chat(request: Request) -> Response:
                         passthrough(raw_line)
 
                 if (acc.has_tool_calls or native_tool_calls) and not acc._seen_finish:
+                    if acc.has_tool_calls and not native_tool_calls:
+                        output_lines = [_chunk_to_line(_tool_call_delta_chunk(tc, acc._base)) for tc in acc._tool_calls]
                     output_lines.append(_chunk_to_line(finish_chunk("tool_calls")))
 
                 if not output_lines:
@@ -765,16 +770,20 @@ async def proxy_chat(request: Request) -> Response:
         return JSONResponse({"error": {"message": str(e), "type": "upstream_error"}}, status_code=502)
 
 
+def _tool_call_delta_chunk(tool_call: dict, base: dict) -> dict:
+    return {
+        "id": base.get("id", "chatcmpl-glm"),
+        "object": "chat.completion.chunk",
+        "created": base.get("created", 0),
+        "model": base.get("model", "glm-4.7-flash-llamacpp"),
+        "choices": [{"index": 0, "delta": {"tool_calls": [tool_call]}, "finish_reason": None}],
+    }
+
+
 def _emit_transformed(etype: str, edata: str | dict, base: dict, output: list[bytes]) -> None:
     """Append a transformed delta chunk to output lines."""
     if etype == "tool_call":
-        output.append(_chunk_to_line({
-            "id": base.get("id", "chatcmpl-glm"),
-            "object": "chat.completion.chunk",
-            "created": base.get("created", 0),
-            "model": base.get("model", "glm-4.7-flash-llamacpp"),
-            "choices": [{"index": 0, "delta": {"tool_calls": [edata]}, "finish_reason": None}],
-        }))
+        output.append(_chunk_to_line(_tool_call_delta_chunk(edata, base)))
     elif etype == "content" and edata:
         output.append(_chunk_to_line({
             "id": base.get("id", "chatcmpl-glm"),
