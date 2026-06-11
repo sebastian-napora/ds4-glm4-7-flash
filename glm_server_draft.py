@@ -166,8 +166,8 @@ async def main():
 
         listen_address, sock = setup_server(args)
         print(f"\n🚀 GLM-4.7-Flash (Draft-Model Spec) @ {MAX_MODEL_LEN} tokens")
-        print(f"📡 Chat API: http://0.0.0.0:11112/v1/chat/completions")
-        print(f"❤️  Health:  http://0.0.0.0:11112/health")
+        print(f"📡 Chat API: http://0.0.0.0:{args.port}/v1/chat/completions")
+        print(f"❤️  Health:  http://0.0.0.0:{args.port}/health")
         await serve_http(
             app,
             sock=sock,

@@ -84,9 +84,22 @@ for cb in registered_callbacks:
 
 # Run uvicorn in the same process (NOT via exec — preserving callbacks)
 if __name__ == "__main__":
+    from starlette.middleware.cors import CORSMiddleware
+
+    # Build app with CORS middleware for cross-device access
+    from litellm.proxy.proxy_server import app as litellm_app
+
+    app = CORSMiddleware(
+        litellm_app,
+        allow_origins=["*"],
+        allow_methods=["*"],
+        allow_headers=["*"],
+        allow_credentials=False,
+    )
+
     import uvicorn
     uvicorn.run(
-        "litellm.proxy.proxy_server:app",
+        app,
         host=LITELLM_HOST,
         port=int(LITELLM_PORT),
         reload=False,
