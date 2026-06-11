@@ -4,10 +4,12 @@
 # Both processes log directly to this terminal. Ctrl+C stops both.
 #
 # Architecture:
-#   VS Code / GitHub Copilot plugin -> LiteLLM (12111) -> llama-server (12112)
+#   VS Code / GitHub Copilot plugin -> LiteLLM (12111) -> XML proxy (12180) -> llama-server (12112)
 #
-# No XML proxy — llama.cpp b9282 natively handles tools/tool_calls.
-# Default context is 65,536 tokens.
+# GLM tool calling is handled by server_compress_llamacpp_direct.py: tools are
+# rendered as XML prompt instructions, native tool schemas are removed before
+# llama.cpp sees them, and generated XML is converted back to OpenAI tool_calls.
+# Default context is 200,072 tokens.
 # Optional speculative decoding with: LLAMA_SPEC_TYPE=ngram-cache
 
 set -euo pipefail
@@ -23,6 +25,7 @@ LLAMA_CTX="${LLAMA_CTX:-200072}"
 LLAMA_NGL="${LLAMA_NGL:-999}"
 LLAMA_PARALLEL="${LLAMA_PARALLEL:-1}"
 LLAMA_REASONING_BUDGET="${LLAMA_REASONING_BUDGET:-0}"
+LLAMA_FLASH_ATTN="${LLAMA_FLASH_ATTN:-auto}"
 LLAMA_SPEC_TYPE="${LLAMA_SPEC_TYPE:-none}"
 
 usage() {
@@ -38,7 +41,7 @@ Environment:
   GLM_PORT              llama-server port. Default: 12112
   LITE_LLM_PROXY_HOST   LiteLLM bind host. Default: 0.0.0.0
   LITE_LLM_PROXY_PORT   LiteLLM port. Default: 12111
-  LLAMA_CTX             Context size. Default: 131072
+  LLAMA_CTX             Context size. Default: 200072
   LLAMA_NGL             GPU layers to offload. Default: 999
   LLAMA_THREADS         CPU threads for llama.cpp. Default: nproc
   LLAMA_PARALLEL        Parallel request slots. Default: 1
@@ -133,6 +136,7 @@ printf "│  llama.cpp:  http://%s:%s                  │\n" "$LLAMA_HOST" "$LL
 printf "│  LiteLLM:    http://%s:%s/v1               │\n" "$LITELLM_HOST" "$LITELLM_PORT"
 printf "│  Context:    %-37s │\n" "$LLAMA_CTX (extended thinking: ${LLAMA_REASONING_BUDGET})"
 printf "│  GPU layers: %-37s │\n" "$LLAMA_NGL"
+printf "│  Flash attn: %-37s │\n" "$LLAMA_FLASH_ATTN"
 printf "│  Spec:       %-37s │\n" "${LLAMA_SPEC_TYPE:-none}"
 printf "│  Config:     %-37s │\n" "lite_llm_config_llamacpp_direct.yaml"
 printf "│  Transform:  %-37s │\n" "XML → OpenAI tool_calls (port 12180)"
@@ -152,7 +156,8 @@ echo "Starting llama-server (port $LLAMA_PORT)..."
     --reasoning-budget "$LLAMA_REASONING_BUDGET" \
     --jinja \
     --alias glm-4.7-flash-llamacpp \
-    ${LLAMA_SPEC_TYPE:+--spec-type "$LLAMA_SPEC_TYPE"} \
+    ${LLAMA_FLASH_ATTN:+--flash-attn "$LLAMA_FLASH_ATTN"} \
+    $([ "$LLAMA_SPEC_TYPE" != "none" ] && printf '%s\n' --spec-type "$LLAMA_SPEC_TYPE") \
     ${LLAMA_SPEC_DRAFT_MODEL:+--spec-draft-model "$LLAMA_SPEC_DRAFT_MODEL" --spec-draft-n-max "${LLAMA_SPEC_DRAFT_N_MAX:-3}"} \
     ${LLAMA_SERVER_EXTRA_ARGS:+ $LLAMA_SERVER_EXTRA_ARGS} \
     &
