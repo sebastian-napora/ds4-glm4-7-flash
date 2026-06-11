@@ -11,6 +11,10 @@ many tools like Copilot's). This module starts two services:
      converts GLM XML tool_calls to OpenAI JSON tool_calls.
   2. LiteLLM proxy on 12111 — serves Copilot, routing to the XML proxy.
 
+By default the proxy describes tools in the prompt and removes the native OpenAI
+"tools" field before forwarding to llama.cpp. That keeps llama.cpp from trying
+to parse GLM's XML tool syntax itself; the proxy owns XML parsing instead.
+
 Both run in the foreground so all output streams to the terminal.
 """
 
@@ -215,6 +219,9 @@ PROXY_PORT    = int(os.environ.get("XML_PROXY_PORT", "12180"))
 
 
 SIMPLE_TOOLS_ENABLED = False  # flip to True to replace client tools with the simple test set
+PROMPT_TOOLS_AS_XML = os.environ.get("GLM_PROMPT_TOOLS_AS_XML", "true").lower() not in {
+    "0", "false", "no", "off",
+}
 
 TOOL_DEFINITIONS: list[dict] = [
     {
@@ -337,6 +344,82 @@ def _replace_tools_with_simple(body_str: str) -> tuple[str, int]:
     return json.dumps(payload, ensure_ascii=False), original_count
 
 
+def _tool_prompt(tools: list[dict]) -> str:
+    """Render OpenAI tool definitions as compact prompt instructions for GLM."""
+    rendered_tools: list[str] = []
+    for tool in tools:
+        fn = tool.get("function", {}) if isinstance(tool, dict) else {}
+        name = fn.get("name")
+        if not name:
+            continue
+        desc = (fn.get("description") or "").strip()
+        params = fn.get("parameters") or {}
+        params_json = json.dumps(params, ensure_ascii=False, separators=(",", ":"))
+        if desc:
+            rendered_tools.append(f"- {name}: {desc}\n  parameters: {params_json}")
+        else:
+            rendered_tools.append(f"- {name}\n  parameters: {params_json}")
+
+    return (
+        "You have access to tools. When a tool is needed, output exactly one "
+        "tool call in this XML format and no surrounding markdown:\n"
+        "<tool_call>tool_name"
+        "<arg_key>argument_name</arg_key><arg_value>argument_value</arg_value>"
+        "</tool_call>\n"
+        "Use one <arg_key>/<arg_value> pair for each argument. Use the exact tool "
+        "name and argument names from the available tools below. For booleans, "
+        "numbers, arrays, or objects, put valid JSON in <arg_value>.\n\n"
+        "Available tools:\n"
+        + "\n".join(rendered_tools)
+    )
+
+
+def _prompt_tools_and_disable_native(body_str: str) -> tuple[str, int, bool]:
+    """Move OpenAI tool definitions into a system prompt and remove native tools.
+
+    llama.cpp can try to parse model-emitted tool calls before our transform proxy
+    sees them. Prompting the tools while forwarding a plain chat request avoids
+    that native parser path and lets this proxy convert GLM XML to OpenAI JSON.
+    """
+    if not PROMPT_TOOLS_AS_XML:
+        return body_str, 0, False
+
+    try:
+        payload = json.loads(body_str)
+    except (json.JSONDecodeError, TypeError):
+        return body_str, 0, False
+
+    tools = payload.get("tools") or []
+    if not tools:
+        return body_str, 0, False
+
+    messages = payload.get("messages")
+    if not isinstance(messages, list):
+        return body_str, len(tools), False
+
+    prompt = _tool_prompt(tools)
+    tool_msg = {
+        "role": "system",
+        "content": prompt,
+    }
+
+    insert_at = 0
+    while (
+        insert_at < len(messages)
+        and isinstance(messages[insert_at], dict)
+        and messages[insert_at].get("role") == "system"
+    ):
+        insert_at += 1
+    messages.insert(insert_at, tool_msg)
+
+    payload["messages"] = messages
+    payload.pop("tools", None)
+    payload.pop("tool_choice", None)
+    payload.pop("parallel_tool_calls", None)
+
+    return json.dumps(payload, ensure_ascii=False), len(tools), True
+
+
 def _fix_grammar_strings(body_str: str) -> tuple[str, int]:
     """Replace regex-style escapes with GBNF-compatible char-classes in JSON body.
 
@@ -386,10 +469,10 @@ def _fix_grammar_strings(body_str: str) -> tuple[str, int]:
             return [walk(item) for item in obj]
         return obj
 
-    for msg in payload.get("messages", []):
-        walk(msg)
-    for tool in payload.get("tools", []):
-        walk(tool)
+    if isinstance(payload.get("messages"), list):
+        payload["messages"] = [walk(msg) for msg in payload["messages"]]
+    if isinstance(payload.get("tools"), list):
+        payload["tools"] = [walk(tool) for tool in payload["tools"]]
 
     if num_fixes > 0:
         return json.dumps(payload, ensure_ascii=False), num_fixes
@@ -410,23 +493,34 @@ async def proxy_chat(request: Request) -> Response:
     # Step 2: Replace tools with our simple 4-tool set (if enabled)
     replaced_body_str, orig_tool_count = _replace_tools_with_simple(fixed_body_str)
 
-    body = replaced_body_str.encode("utf-8")
+    # Step 3: Prompt tools as XML instructions, then remove native tool schemas so
+    # llama.cpp does not attempt to parse GLM's XML tool-call text itself.
+    forwarded_body_str, prompted_tool_count, prompted_tools = _prompt_tools_and_disable_native(
+        replaced_body_str,
+    )
+
+    body = forwarded_body_str.encode("utf-8")
 
     # Debug: log request overview
     try:
-        req_payload = json.loads(replaced_body_str)
+        req_payload = json.loads(forwarded_body_str)
         n_tools = len(req_payload.get("tools", []))
         n_msgs = len(req_payload.get("messages", []))
         body_kb = len(body) / 1024
         _log.debug(
-            "proxy_chat  tools=%d(%s)  msgs=%d  body=%.1fKB  "
-            "grammar_fixes=%d  orig_tools=%d",
+            "proxy_chat  native_tools=%d(%s)  prompted_tools=%d  msgs=%d  "
+            "body=%.1fKB  grammar_fixes=%d  orig_tools=%d",
             n_tools, "simple" if SIMPLE_TOOLS_ENABLED else "original",
+            prompted_tool_count if prompted_tools else 0,
             n_msgs, body_kb, num_grammar_fixes, orig_tool_count,
         )
     except Exception:
-        _log.debug("proxy_chat  body_bytes=%d  grammar_fixes=%d  orig_tools=%d",
-                   len(body), num_grammar_fixes, orig_tool_count)
+        _log.debug(
+            "proxy_chat  body_bytes=%d  grammar_fixes=%d  orig_tools=%d  "
+            "prompted_tools=%d",
+            len(body), num_grammar_fixes, orig_tool_count,
+            prompted_tool_count if prompted_tools else 0,
+        )
 
     try:
         async with httpx.AsyncClient(timeout=600.0) as client:
