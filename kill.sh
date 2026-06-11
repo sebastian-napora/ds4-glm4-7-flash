@@ -6,8 +6,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-PORTS=(11111 11112 11113 12111 12112 8080)
-PORT_PATTERN='11111|11112|11113|12111|12112|8080'
+PORTS=(11111 11112 11113 12111 12112 12180 8080)
+PORT_PATTERN='11111|11112|11113|12111|12112|12180|8080'
 PROCESS_PATTERNS=(
     "$SCRIPT_DIR/native/bin/glm-native-server"
     "$SCRIPT_DIR/glm_server.py"
@@ -15,6 +15,7 @@ PROCESS_PATTERNS=(
     "$SCRIPT_DIR/glm_sglang_server.py"
     "$SCRIPT_DIR/server_compress.py"
     "$SCRIPT_DIR/server_compress_llamacpp.py"
+    "$SCRIPT_DIR/server_compress_llamacpp_direct.py"
     "$SCRIPT_DIR/token_stats_server.py"
     "$SCRIPT_DIR/run-server-litellm.sh"
     "$SCRIPT_DIR/start.sh"

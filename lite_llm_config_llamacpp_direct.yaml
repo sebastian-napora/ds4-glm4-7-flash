@@ -4,10 +4,11 @@
 #   VS Code / GitHub Copilot plugin -> LiteLLM (12111) -> XML proxy (12180) -> llama-server (12112)
 #
 # The XML proxy (server_compress_llamacpp_direct.py, runs on port 12180) does:
-#   1. Replaces Copilot's 94 tools with a 4-tool set (read_file/write_file/edit_file/delete_file)
-#   2. Fixes GBNF grammar escapes (\d \w \s etc) so llama.cpp can parse them
-#   3. Converts GLM XML <tool_call> output to OpenAI JSON tool_calls
-#   4. Disables extended-thinking tokens (--reasoning-budget 0)
+#   1. Renders all client-provided tools into XML prompt instructions
+#   2. Removes native OpenAI tool schemas before llama.cpp sees them
+#   3. Fixes GBNF grammar escapes (\d \w \s etc) in forwarded payloads
+#   4. Converts GLM XML <tool_call> output to OpenAI JSON tool_calls
+#   5. Also accepts direct leaked tool tags like <runSubagent> when that tool was provided
 #
 # LiteLLM here acts as a passthrough — it just forwards requests to the XML proxy.
 # No custom LiteLLM callbacks needed; all logic lives in the XML proxy.
