@@ -158,7 +158,7 @@ class GLMToolCallExtractor:
             _log.warning("Cannot parse tool_call name from: %s", xml_block[:120])
             return None
 
-        tool_name = name_match.group(1).strip()
+        tool_name = self._resolve_tool_name(name_match.group(1).strip())
 
         # Extract arguments: <arg_key>key</arg_key><arg_value>val</arg_value>
         # arg values can span multiple lines, hence DOTALL.
@@ -192,6 +192,7 @@ class GLMToolCallExtractor:
 
     def _parse_direct_tool_call(self, tool_name: str, xml_block: str) -> dict | None:
         """Parse leaked direct tool tags, e.g. <runSubagent><prompt>...</prompt>."""
+        tool_name = self._resolve_tool_name(tool_name)
         args: dict = {}
         for match in re.finditer(
             r"<([A-Za-z_][A-Za-z0-9_.:-]*)\b[^>]*>(.*?)</\1>",
@@ -223,6 +224,28 @@ class GLMToolCallExtractor:
                 "arguments": json.dumps(args, ensure_ascii=False),
             },
         }
+
+    def _resolve_tool_name(self, tool_name: str) -> str:
+        """Map common model-emitted aliases back to the provided OpenAI tool name."""
+        if not self._allowed_tool_names or tool_name in self._allowed_tool_names:
+            return tool_name
+
+        aliases = [
+            tool_name.replace("/", "_"),
+            re.sub(r"[^A-Za-z0-9_-]", "_", tool_name),
+        ]
+        for alias in aliases:
+            if alias in self._allowed_tool_names:
+                return alias
+
+        lower_map = {name.lower(): name for name in self._allowed_tool_names}
+        for alias in aliases:
+            resolved = lower_map.get(alias.lower())
+            if resolved:
+                return resolved
+
+        _log.warning("Tool name %r not found in provided tools; forwarding as emitted", tool_name)
+        return tool_name
 
     def build_final_chunk(self, chunk_id: str = "", chunk_created: int = 0) -> dict:
         """Build the final completion chunk with accumulated tool_calls."""
@@ -265,6 +288,50 @@ def _chunk_to_line(chunk: dict) -> bytes:
     # SSE events MUST be terminated by a blank line ("\n\n"); a single "\n"
     # makes downstream SSE parsers (e.g. LiteLLM) buffer forever and yield nothing.
     return b"data: " + json.dumps(chunk, ensure_ascii=False).encode() + b"\n\n"
+
+
+def _message_tool_call(tool_call: dict) -> dict:
+    """OpenAI non-streaming message.tool_calls do not use the streaming index key."""
+    return {
+        "id": tool_call.get("id"),
+        "type": tool_call.get("type", "function"),
+        "function": tool_call.get("function", {}),
+    }
+
+
+def _transform_non_streaming_completion(content: bytes, allowed_tool_names: set[str]) -> bytes | None:
+    """Convert XML tool calls inside a non-streaming chat completion response."""
+    try:
+        payload = json.loads(content)
+    except (json.JSONDecodeError, TypeError):
+        return None
+
+    changed = False
+    for choice in payload.get("choices") or []:
+        if not isinstance(choice, dict):
+            continue
+        message = choice.get("message")
+        if not isinstance(message, dict):
+            continue
+
+        content_text = message.get("content")
+        if not isinstance(content_text, str) or "<" not in content_text:
+            continue
+
+        extractor = GLMToolCallExtractor(allowed_tool_names=allowed_tool_names)
+        extractor.ingest_text(content_text)
+        if not extractor.has_tool_calls:
+            continue
+
+        message["content"] = None
+        message["tool_calls"] = [_message_tool_call(tc) for tc in extractor._tool_calls]
+        choice["finish_reason"] = "tool_calls"
+        changed = True
+
+    if not changed:
+        return None
+
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
 
 
 # ════════════════════════════════════════════════════════════════════════════════
@@ -635,13 +702,20 @@ async def proxy_chat(request: Request) -> Response:
                 )
 
                 if not is_stream:
-                    # Non-streaming — pass through untouched
                     content = await llama_resp.aread()
-                    _log.debug("non-streaming resp  bytes=%d", len(content))
+                    transformed = _transform_non_streaming_completion(content, tool_names)
+                    if transformed is not None:
+                        _log.info("non-streaming resp  transformed XML tool_call to OpenAI tool_calls")
+                        content = transformed
+                    else:
+                        _log.debug("non-streaming resp  bytes=%d", len(content))
+                    headers_out = dict(llama_resp.headers)
+                    headers_out.pop("content-length", None)
+                    headers_out["content-type"] = "application/json"
                     return Response(
                         content=content,
                         status_code=llama_resp.status_code,
-                        headers=dict(llama_resp.headers),
+                        headers=headers_out,
                     )
 
                 # ── Streaming transform ────────────────────────────────────────

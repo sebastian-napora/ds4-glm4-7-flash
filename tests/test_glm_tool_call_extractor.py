@@ -43,7 +43,11 @@ except ModuleNotFoundError:
     routing.Route = object
     sys.modules["starlette.routing"] = routing
 
-from server_compress_llamacpp_direct import GLMToolCallExtractor, _extract_tool_names
+from server_compress_llamacpp_direct import (
+    GLMToolCallExtractor,
+    _extract_tool_names,
+    _transform_non_streaming_completion,
+)
 
 
 class GLMToolCallExtractorTests(unittest.TestCase):
@@ -117,6 +121,66 @@ class GLMToolCallExtractorTests(unittest.TestCase):
         )
 
         self.assertEqual(_extract_tool_names(body), {"runSubagent", "read_file"})
+
+    def test_maps_slash_tool_name_to_provided_underscore_name(self):
+        extractor = GLMToolCallExtractor(allowed_tool_names={"MCP_Client2_get_figma_data"})
+
+        events = extractor.ingest_text(
+            "<tool_call>MCP_Client2/get_figma_data"
+            "<arg_key>fileKey</arg_key><arg_value>4TVw1VoyXO1si3l2w8pJcR</arg_value>"
+            "<arg_key>nodeId</arg_key><arg_value>2073-56878</arg_value>"
+            "</tool_call>"
+        )
+
+        tool_call = events[0][1]
+        self.assertEqual(tool_call["function"]["name"], "MCP_Client2_get_figma_data")
+        self.assertEqual(
+            json.loads(tool_call["function"]["arguments"]),
+            {"fileKey": "4TVw1VoyXO1si3l2w8pJcR", "nodeId": "2073-56878"},
+        )
+
+    def test_transforms_non_streaming_completion_with_xml_tool_call(self):
+        response = {
+            "id": "chatcmpl-test",
+            "object": "chat.completion",
+            "created": 1,
+            "model": "glm-test",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": (
+                            "I'll help you create a user story."
+                            "<tool_call>MCP_Client2/get_figma_data"
+                            "<arg_key>fileKey</arg_key><arg_value>4TVw1VoyXO1si3l2w8pJcR</arg_value>"
+                            "<arg_key>nodeId</arg_key><arg_value>2073-56878</arg_value>"
+                            "</tool_call>"
+                        ),
+                    },
+                    "finish_reason": "stop",
+                }
+            ],
+        }
+
+        transformed = _transform_non_streaming_completion(
+            json.dumps(response).encode(),
+            {"MCP_Client2_get_figma_data"},
+        )
+
+        self.assertIsNotNone(transformed)
+        payload = json.loads(transformed)
+        choice = payload["choices"][0]
+        self.assertEqual(choice["finish_reason"], "tool_calls")
+        self.assertIsNone(choice["message"]["content"])
+        self.assertEqual(
+            choice["message"]["tool_calls"][0]["function"]["name"],
+            "MCP_Client2_get_figma_data",
+        )
+        self.assertEqual(
+            json.loads(choice["message"]["tool_calls"][0]["function"]["arguments"]),
+            {"fileKey": "4TVw1VoyXO1si3l2w8pJcR", "nodeId": "2073-56878"},
+        )
 
 
 if __name__ == "__main__":
